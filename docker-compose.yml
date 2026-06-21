@@ -1,0 +1,65 @@
+# Local-dev compose for owui-crawl4ai-proxy.
+#
+# Brings up crawl4ai 0.8.9 with auth enabled + this proxy on a shared
+# network, then `curl http://localhost:8000/load` exercises the public
+# side end-to-end.
+#
+# The crawl4ai image used here is the one the cluster already runs
+# (see apps/opti/crawl4ai in samuelcstewart/fluxcd). The token is
+# generated below via a fixed dev value; production uses a SOPS-managed
+# Secret in-cluster.
+#
+# Note on crawl4ai auth: the upstream entrypoint only binds to a
+# non-loopback address when CRAWL4AI_API_TOKEN is set. When unset,
+# kubelet injects CRAWL4AI_PORT from the Service and gunicorn fails
+# to start. The fix is to set CRAWL4AI_PORT=11235 explicitly so the
+# env from the Service is overridden -- see the homelab-kubernetes
+# skill for the cluster-side context. In docker-compose we don't have
+# that Service injection, so the port collision doesn't happen, but
+# we set CRAWL4AI_PORT=11235 here too for parity with production.
+#
+# Usage:
+#   docker compose up --build
+#   curl -X POST http://localhost:8000/load \
+#     -H 'Content-Type: application/json' \
+#     -d '{"url":"https://example.com"}' | jq
+#   curl http://localhost:8000/health | jq
+
+services:
+  crawl4ai:
+    image: unclecode/crawl4ai:0.8.9
+    container_name: owui-crawl4ai-dev-upstream
+    environment:
+      CRAWL4AI_API_TOKEN: dev-token-not-secret
+      CRAWL4AI_PORT: "11235"
+    healthcheck:
+      # crawl4ai's /health is the only endpoint that doesn't require auth.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11235/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    networks:
+      - owui-crawl4ai-net
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: registry.lan.stew.foo/samuelcstewart/owui-crawl4ai-proxy:local
+    container_name: owui-crawl4ai-dev-proxy
+    depends_on:
+      crawl4ai:
+        condition: service_healthy
+    environment:
+      PROXY_CRAWL4AI_URL: http://crawl4ai:11235
+      PROXY_CRAWL4AI_API_TOKEN: dev-token-not-secret
+      PROXY_REQUEST_TIMEOUT: "30.0"
+    ports:
+      - "8000:8000"
+    networks:
+      - owui-crawl4ai-net
+
+networks:
+  owui-crawl4ai-net:
+    driver: bridge
