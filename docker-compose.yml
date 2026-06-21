@@ -1,33 +1,32 @@
 # Local-dev compose for owui-crawl4ai-proxy.
 #
-# Brings up crawl4ai 0.8.9 with auth enabled + this proxy on a shared
+# Brings up crawl4ai 0.9.0 with auth enabled + this proxy on a shared
 # network, then `curl http://localhost:8000/load` exercises the public
 # side end-to-end.
 #
-# The crawl4ai image used here is the one the cluster already runs
-# (see apps/opti/crawl4ai in samuelcstewart/fluxcd). The token is
-# generated below via a fixed dev value; production uses a SOPS-managed
-# Secret in-cluster.
+# 0.9.0 is the first crawl4ai release that requires auth on every
+# endpoint except `GET /health`, so a fixed dev token is set on both
+# sides to exercise the full auth path.
 #
-# Note on crawl4ai auth: the upstream entrypoint only binds to a
-# non-loopback address when CRAWL4AI_API_TOKEN is set. When unset,
-# kubelet injects CRAWL4AI_PORT from the Service and gunicorn fails
-# to start. The fix is to set CRAWL4AI_PORT=11235 explicitly so the
-# env from the Service is overridden -- see the homelab-kubernetes
-# skill for the cluster-side context. In docker-compose we don't have
-# that Service injection, so the port collision doesn't happen, but
-# we set CRAWL4AI_PORT=11235 here too for parity with production.
+# Note on CRAWL4AI_PORT: the upstream entrypoint only binds to a
+# non-loopback address when CRAWL4AI_API_TOKEN is set, and defaults to
+# 11235. When the entrypoint sees CRAWL4AI_PORT already in its
+# environment (e.g. injected by a container orchestrator), the default
+# 11235 is overridden and gunicorn may fail to start. Setting
+# CRAWL4AI_PORT=11235 explicitly here pins it so the service comes up
+# regardless of how the container is launched.
 #
 # Usage:
-#   docker compose up --build
+#   docker compose up -d --build      # dev stack (crawl4ai + proxy)
 #   curl -X POST http://localhost:8000/load \
 #     -H 'Content-Type: application/json' \
 #     -d '{"url":"https://example.com"}' | jq
 #   curl http://localhost:8000/health | jq
+#   docker compose down               # tear down
 
 services:
   crawl4ai:
-    image: unclecode/crawl4ai:0.8.9
+    image: unclecode/crawl4ai:0.9.0
     container_name: owui-crawl4ai-dev-upstream
     environment:
       CRAWL4AI_API_TOKEN: dev-token-not-secret
@@ -46,7 +45,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: registry.lan.stew.foo/samuelcstewart/owui-crawl4ai-proxy:local
     container_name: owui-crawl4ai-dev-proxy
     depends_on:
       crawl4ai:
