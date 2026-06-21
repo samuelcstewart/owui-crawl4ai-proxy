@@ -1,0 +1,164 @@
+[project]
+name = "owui-crawl4ai-proxy"
+version = "0.1.0"
+description = "Bridge between Open WebUI's external web loader interface and crawl4ai"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Sam Stewart", email = "sam@stew.foo" },
+]
+# Runtime deps. The Dockerfile runs `uv sync --frozen --no-dev --no-editable`
+# against this file, so adding/removing a dep here is the only place the
+# runtime image needs to be touched.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/owui_crawl4ai_proxy"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "ty>=0.0.1a5",
+    "poethepoet>=0.36",
+]
+
+# ---- ruff ----------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "ASYNC", # flake8-async
+]
+ignore = [
+    "E501",  # line length — handled by formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["owui_crawl4ai_proxy"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI route handlers use `Depends(...)` as a default argument by
+# design — that's the framework's dependency-injection contract.
+"src/owui_crawl4ai_proxy/main.py" = ["B008"]
+
+# ---- pytest --------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = ["-ra", "--strict-markers"]
+
+# ---- poe -----------------------------------------------------------------
+# Image registry/repo used by the docker-build* tasks. Defaults match
+# the cluster-side kustomization that consumes this image
+# (apps/opti/open-webui/crawl4ai-proxy/kustomization.yaml).
+[tool.poe.env]
+IMAGE_REGISTRY = { default = "registry.lan.stew.foo" }
+IMAGE_REPO = { default = "samuelcstewart/owui-crawl4ai-proxy" }
+
+[tool.poe.tasks.test]
+help = "Run the pytest suite"
+cmd = "pytest"
+
+[tool.poe.tasks.lint]
+help = "ruff check (lint)"
+cmd = "ruff check"
+
+[tool.poe.tasks.format]
+help = "ruff format (write)"
+cmd = "ruff format"
+
+[tool.poe.tasks.format-check]
+help = "ruff format --check (CI gate)"
+cmd = "ruff format --check"
+
+[tool.poe.tasks.typecheck]
+help = "ty type-check"
+cmd = "ty check"
+
+[tool.poe.tasks.check]
+help = "Run lint + format-check + typecheck + tests — full CI gate"
+sequence = ["lint", "format-check", "typecheck", "test"]
+
+
+[tool.poe.tasks.check-style]
+help = "Lint + format check (CI mode)"
+sequence = ["lint", "format-check"]
+
+
+[tool.poe.tasks.fix]
+help = "Auto-fix lint and format issues"
+sequence = ["lint-fix", "format"]
+
+
+[tool.poe.tasks.lint-fix]
+help = "Lint with auto-fix"
+cmd = "ruff check --fix"
+
+[tool.poe.tasks.docker-build]
+help = "Build the multi-stage image for linux/amd64 + linux/arm64 and push the manifest list to the registry as :<short-sha> and :latest"
+# `shell` (not `cmd`) so the line runs through sh and the $(...)
+# git substitution is expanded. With plain `cmd`, poe tokenizes on
+# whitespace and the `--short` token lands in the docker argv.
+#
+# `--push` is mandatory here: a multi-arch manifest list cannot be
+# loaded into the local Docker daemon (which holds a single-platform
+# image at a time) and cannot be pushed per-tag. The buildx build
+# builds both platforms in parallel, assembles the manifest list, and
+# pushes it as a single image index. Each per-platform image also
+# gets its own config+layer blobs in the registry.
+#
+# Idempotent builder bootstrap: create the `<repo>-multiarch` builder
+# on first run only, reuse it on subsequent runs.
+shell = """
+docker buildx inspect owui-crawl4ai-proxy-multiarch >/dev/null 2>&1 || \\
+  docker buildx create --name owui-crawl4ai-proxy-multiarch --driver docker-container --bootstrap
+docker buildx build \\
+  --builder owui-crawl4ai-proxy-multiarch \\
+  --platform linux/amd64,linux/arm64 \\
+  -t "$IMAGE_REGISTRY/$IMAGE_REPO:$(git rev-parse --short HEAD)" \\
+  -t "$IMAGE_REGISTRY/$IMAGE_REPO:latest" \\
+  --push \\
+  .
+"""
+
+[tool.poe.tasks.docker-build-local]
+help = "Build for the current host architecture only and load to the local Docker daemon (fast iteration; no push)"
+# Single-arch build with --load, so `docker run` works against the
+# resulting image without going through the registry. Use this for
+# local smoke testing. The `--platform` is derived from `uname -m` so
+# the task works on both aarch64 and x86_64 hosts.
+shell = """
+docker buildx build \\
+  --platform "$(uname -m | sed 's|aarch64|linux/arm64|; s|x86_64|linux/amd64|')" \\
+  -t "$IMAGE_REGISTRY/$IMAGE_REPO:local" \\
+  --load \\
+  .
+"""
+
+[tool.poe.tasks.docker]
+help = "Build (multi-arch) and push $IMAGE_REGISTRY/$IMAGE_REPO to the registry"
+sequence = ["docker-build"]
