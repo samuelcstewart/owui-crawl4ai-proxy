@@ -1,0 +1,63 @@
+# Local-dev compose for owui-crawl4ai-proxy.
+#
+# Brings up crawl4ai 0.9.0 with auth enabled + this proxy on a shared
+# network, then `curl http://localhost:8000/load` exercises the public
+# side end-to-end.
+#
+# 0.9.0 is the first crawl4ai release that requires auth on every
+# endpoint except `GET /health`, so a fixed dev token is set on both
+# sides to exercise the full auth path.
+#
+# Note on CRAWL4AI_PORT: the upstream entrypoint only binds to a
+# non-loopback address when CRAWL4AI_API_TOKEN is set, and defaults to
+# 11235. When the entrypoint sees CRAWL4AI_PORT already in its
+# environment (e.g. injected by a container orchestrator), the default
+# 11235 is overridden and gunicorn may fail to start. Setting
+# CRAWL4AI_PORT=11235 explicitly here pins it so the service comes up
+# regardless of how the container is launched.
+#
+# Usage:
+#   docker compose up -d --build      # dev stack (crawl4ai + proxy)
+#   curl -X POST http://localhost:8000/load \
+#     -H 'Content-Type: application/json' \
+#     -d '{"url":"https://example.com"}' | jq
+#   curl http://localhost:8000/health | jq
+#   docker compose down               # tear down
+
+services:
+  crawl4ai:
+    image: unclecode/crawl4ai:0.9.0
+    container_name: owui-crawl4ai-dev-upstream
+    environment:
+      CRAWL4AI_API_TOKEN: dev-token-not-secret
+      CRAWL4AI_PORT: "11235"
+    healthcheck:
+      # crawl4ai's /health is the only endpoint that doesn't require auth.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11235/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    networks:
+      - owui-crawl4ai-net
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: owui-crawl4ai-dev-proxy
+    depends_on:
+      crawl4ai:
+        condition: service_healthy
+    environment:
+      PROXY_CRAWL4AI_URL: http://crawl4ai:11235
+      PROXY_CRAWL4AI_API_TOKEN: dev-token-not-secret
+      PROXY_REQUEST_TIMEOUT: "30.0"
+    ports:
+      - "8000:8000"
+    networks:
+      - owui-crawl4ai-net
+
+networks:
+  owui-crawl4ai-net:
+    driver: bridge
