@@ -44,17 +44,25 @@ an error.
 
 ## Publish
 
-A GitHub Actions workflow at `.github/workflows/publish.yml` builds
-the multi-arch image on every push to `main` and every `v*.*.*` tag,
-and pushes the result to GitHub Container Registry:
+A GitHub Actions workflow at `.github/workflows/ci.yml` runs on every
+push to `main`, every `v*.*.*` tag, and every pull request against
+`main`, and on manual dispatch. Two jobs:
+
+- `test` — `uv sync` + `uv run poe check` (ruff + format-check + ty +
+  pytest). Runs first; the build job depends on it.
+- `build` — multi-arch (linux/amd64 + linux/arm64) `buildx build`.
+  On `push` events, pushes the result to GHCR. On `pull_request`
+  events, builds for verification only (`push: false`).
+
+The published image lives at:
 
 ```
 ghcr.io/samuelcstewart/owui-crawl4ai-proxy
 ```
 
-Tag scheme:
+Tag scheme on push events:
 
-- main pushes → `:main`, `:<short-sha>`, `:latest`
+- main push → `:main`, `:<short-sha>`, `:latest`
 - `v0.1.0` tag → `:v0.1.0`, `:v0.1`, `:v0`, `:<short-sha>`
 
 Visibility inherits from the repo (public). The `GITHUB_TOKEN` in the
@@ -73,12 +81,22 @@ runner has `packages: write` via the workflow's `permissions` block.
 
 ## Publishing
 
-A GitHub Actions workflow (`.github/workflows/publish.yml`) builds
-the multi-arch image and pushes it to GHCR:
+A GitHub Actions workflow (`.github/workflows/ci.yml`) runs lint +
+typecheck + tests + multi-arch build on every PR, and the same plus
+a push to GHCR on every merge to `main` or `v*.*.*` tag:
 
 ```
 ghcr.io/samuelcstewart/owui-crawl4ai-proxy
 ```
+
+Tag scheme:
+
+- main pushes → `:main`, `:<short-sha>`, `:latest`
+- `v0.1.0` tag → `:v0.1.0`, `:v0.1`, `:v0`, `:<short-sha>`
+
+PR builds run the same `buildx` invocation with `push: false`, so PRs
+get a Dockerfile regression check (and the test suite) but never
+produce a throwaway GHCR image.
 
 Pullable directly:
 

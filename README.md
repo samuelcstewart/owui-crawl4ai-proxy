@@ -81,12 +81,22 @@ poe build                            # multi-arch (amd64+arm64), --load (Docker 
 
 ## Publishing
 
-A GitHub Actions workflow builds and pushes the multi-arch image to
-GHCR on every push to `main` and every `v*.*.*` tag:
+A GitHub Actions workflow builds and pushes a multi-arch image to
+GHCR. The same workflow also runs on every PR (build + tests, no
+push) as a Dockerfile regression gate:
 
 ```
 ghcr.io/samuelcstewart/owui-crawl4ai-proxy
 ```
+
+Tag scheme:
+
+- main pushes → `:main`, `:<short-sha>`, `:latest`
+- `v0.1.0` tag → `:v0.1.0`, `:v0.1`, `:v0`, `:<short-sha>`
+
+PR builds run the same `buildx` invocation with `push: false`, so PRs
+get a build verification (and the test suite) but never produce a
+throwaway GHCR image.
 
 Pullable directly:
 
