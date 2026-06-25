@@ -1,0 +1,76 @@
+name: publish
+
+# Publishes a multi-arch (linux/amd64 + linux/arm64) OCI image to GHCR
+# on every push to main, every semver tag (`v*.*.*`), and on manual
+# dispatch. The resulting image is publicly pullable at
+# `ghcr.io/samuelcstewart/owui-crawl4ai-proxy` (visibility inherits
+# from this repo's public setting).
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Cancel an in-progress run if a new commit lands on the same ref —
+# the previous build's output is invalidated anyway.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # QEMU + buildx for cross-arch builds. The runner is amd64; arm64
+      # is built under binfmt_misc emulation. GHA's QEMU handles the
+      # common Rust/Python toolchain loads better than a hand-rolled
+      # local setup.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Tag scheme:
+      #   main pushes  -> :main, :<short-sha>, :latest
+      #   tag v0.1.0   -> :v0.1.0, :v0.1, :v0, :<short-sha>
+      #   workflow_dispatch (on main) -> same as main push
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Build and push both architectures in parallel. Cache hits
+      # between runs via the GHA buildx backend, so re-pushes of
+      # unchanged layers are near-instant.
+      #
+      # `provenance: false` skips SLSA attestation manifests — the
+      # proxy isn't a supply-chain target and the extra attestation
+      # entries just clutter the index.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false

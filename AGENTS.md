@@ -12,7 +12,7 @@ crawl4ai. Do not redesign the service or refactor unrelated code.
 
 ## Conventions
 
-- **Language**: Python 3.12+, type-checked with `ty`.
+- **Language**: Python 3.14+, type-checked with `ty`.
 - **Linting**: `ruff check` + `ruff format`. No warnings allowed.
 - **Tests**: `pytest`. New endpoints or error paths need tests.
 - **Commits**: conventional commits (`feat:`, `fix:`, `build:`, etc.).
@@ -30,18 +30,35 @@ this for local dev:
 docker compose build
 ```
 
-For a single-arch image loaded into the local Docker daemon:
+For a multi-arch (`linux/amd64` + `linux/arm64`) image loaded into
+the local Docker daemon:
 
 ```
 poe build
 ```
 
-For a multi-arch (`linux/amd64` + `linux/arm64`) build saved to a
-tarball (handy for offline transfer; no registry needed):
+Requires Docker 29+ with the containerd image store (snapshotter)
+enabled. That's what makes `buildx build --load` accept a
+multi-platform build; on classic single-platform storage you'll get
+an error.
+
+## Publish
+
+A GitHub Actions workflow at `.github/workflows/publish.yml` builds
+the multi-arch image on every push to `main` and every `v*.*.*` tag,
+and pushes the result to GitHub Container Registry:
 
 ```
-poe build-multiarch
+ghcr.io/samuelcstewart/owui-crawl4ai-proxy
 ```
+
+Tag scheme:
+
+- main pushes → `:main`, `:<short-sha>`, `:latest`
+- `v0.1.0` tag → `:v0.1.0`, `:v0.1`, `:v0`, `:<short-sha>`
+
+Visibility inherits from the repo (public). The `GITHUB_TOKEN` in the
+runner has `packages: write` via the workflow's `permissions` block.
 
 ## What this repo is NOT
 
@@ -53,3 +70,18 @@ poe build-multiarch
   downstream of this project.
 - Not a test target for Open WebUI itself. The proxy just satisfies
   Open WebUI's external loader contract.
+
+## Publishing
+
+A GitHub Actions workflow (`.github/workflows/publish.yml`) builds
+the multi-arch image and pushes it to GHCR:
+
+```
+ghcr.io/samuelcstewart/owui-crawl4ai-proxy
+```
+
+Pullable directly:
+
+```bash
+docker pull ghcr.io/samuelcstewart/owui-crawl4ai-proxy:latest
+```

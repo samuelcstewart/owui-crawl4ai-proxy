@@ -13,7 +13,7 @@ instance. The proxy:
 
 ## Stack
 
-- Python 3.12+
+- Python 3.14+
 - [uv](https://docs.astral.sh/uv/) for package management
 - [ruff](https://docs.astral.sh/ruff/) for lint + format
 - [ty](https://docs.astral.sh/ty/) for type checking
@@ -54,8 +54,7 @@ curl -X POST http://localhost:8000/load \
 For a standalone build of the proxy image only:
 
 ```bash
-poe build                            # single-arch, --load into local docker daemon
-poe build-multiarch                  # multi-arch, --output to .tar (no push)
+poe build                            # multi-arch (amd64+arm64), --load (Docker 29+)
 ```
 
 ## API
@@ -78,6 +77,21 @@ poe build-multiarch                  # multi-arch, --output to .tar (no push)
 ```json
 {"status": "ok"}    // 200 if upstream crawl4ai is reachable
 {"status": "degraded"}  // 503 if upstream is unreachable
+```
+
+## Publishing
+
+A GitHub Actions workflow builds and pushes the multi-arch image to
+GHCR on every push to `main` and every `v*.*.*` tag:
+
+```
+ghcr.io/samuelcstewart/owui-crawl4ai-proxy
+```
+
+Pullable directly:
+
+```bash
+docker pull ghcr.io/samuelcstewart/owui-crawl4ai-proxy:latest
 ```
 
 ## License

@@ -3,7 +3,7 @@ name = "owui-crawl4ai-proxy"
 version = "0.1.0"
 description = "Bridge between Open WebUI's external web loader interface and crawl4ai"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 authors = [
     { name = "Sam Stewart", email = "sam@stew.foo" },
@@ -38,7 +38,7 @@ dev = [
 # ---- ruff ----------------------------------------------------------------
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -84,9 +84,14 @@ markers = [
 # Legacy `docker-build-local` is preserved as an alias for callers that
 # already use it.
 #
-# `build`         — single-arch image, --load into the local Docker daemon
-# `build-multiarch` — multi-arch image, written to a tarball for offline
-#                    transfer (no registry push)
+# `build` — multi-arch (amd64+arm64) image, --load into the local Docker
+#           daemon. Requires Docker 29+ with the containerd image store
+#           (snapshotter) enabled — that's what makes `--load` accept a
+#           multi-platform build. On classic single-platform storage
+#           you'll get an error; the fix is to enable containerd
+#           snapshotter in /etc/docker/daemon.json (`features.containerd
+#           -snapshotter: true`) and restart the daemon.
+#
 # Pushing the image to a registry is intentionally NOT exposed as a poe
 # task — bring your own registry credentials and run `docker buildx
 # build --push` (or compose) however suits your environment.
@@ -95,26 +100,12 @@ markers = [
 PROXY_HEALTH_URL = { default = "http://localhost:8000/health" }
 
 [tool.poe.tasks.build]
-help = "Build the image for the current host architecture and load it into the local Docker daemon (fast iteration; no push)"
-shell = """
-docker buildx build \\
-  --platform "$(uname -m | sed 's|aarch64|linux/arm64|; s|x86_64|linux/amd64|')" \\
-  -t owui-crawl4ai-proxy:local \\
-  --load \\
-  .
-"""
-
-[tool.poe.tasks.build-multiarch]
-help = "Build a multi-arch (amd64+arm64) image and write it to a tarball for offline transfer (no registry push)"
-# `--output type=tar` writes a single tarball containing both per-arch
-# images plus the multi-arch manifest. `docker load < tarball` will
-# load the host architecture's image into the local daemon. To push
-# to a real registry, run `docker buildx build --push` directly.
+help = "Build a multi-arch (linux/amd64 + linux/arm64) image and load it into the local Docker daemon. Requires Docker 29+ with the containerd image store enabled."
 shell = """
 docker buildx build \\
   --platform linux/amd64,linux/arm64 \\
-  -t owui-crawl4ai-proxy:multiarch \\
-  --output type=tar,dest=owui-crawl4ai-proxy-multiarch.tar \\
+  -t owui-crawl4ai-proxy:local \\
+  --load \\
   .
 """
 
