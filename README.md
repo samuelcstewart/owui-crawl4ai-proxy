@@ -6,8 +6,9 @@ instance. The proxy:
 
 - Accepts `POST /load` requests shaped like the Open WebUI external loader
   contract (`{"urls": ["...", "..."]}` — a batch).
-- Internally forwards to crawl4ai's `POST /crawl` endpoint with the bearer
-  token crawl4ai 0.9.0+ requires.
+- Internally forwards to crawl4ai's `POST /crawl` endpoint. If
+  `PROXY_CRAWL4AI_API_TOKEN` is set, the proxy attaches the
+  bearer token; if unset, the upstream call goes without auth.
 - Returns a JSON array of langchain-style `Document` (`page_content` +
   `metadata`) — one per input URL, in order.
 - Exposes `GET /health` for liveness probes — checks that crawl4ai is
@@ -114,7 +115,7 @@ ghcr.io/samuelcstewart/owui-crawl4ai-proxy
 Tag scheme:
 
 - main pushes → `:main`, `:<short-sha>`, `:latest`
-- `v0.1.0` tag → `:v0.1.0`, `:v0.1`, `:v0`, `:<short-sha>`
+- `v0.3.0` tag → `:v0.3.0`, `:v0.3`, `:v0`, `:<short-sha>`
 
 PR builds run the same `buildx` invocation with `push: false`, so PRs
 get a build verification (and the test suite) but never produce a
