@@ -36,10 +36,26 @@ proxy's README.
   URLs at a time.
 - Response: a JSON array of langchain `Document` (`page_content` +
   `metadata`), one per input URL, in the same order.
-- Auth: OWUI sends an `Authorization: Bearer` header where the token
-  is sourced from OWUI's `EXTERNAL_WEB_LOADER_API_KEY`. Set
-  `PROXY_OWUI_API_TOKEN` on the proxy to the same value to enforce
-  it; leave unset for trusted in-cluster calls.
+- The proxy does not validate any inbound `Authorization` header.
+  OWUI's `ExternalWebLoader` sends one (its
+  `EXTERNAL_WEB_LOADER_API_KEY`); the proxy ignores it. The proxy
+  is designed to run on a trusted local network alongside OWUI and
+  crawl4ai — neither direction enforces auth by default.
+
+## Auth posture
+
+The proxy intentionally does no auth validation:
+
+- Inbound: no dependency reads `Authorization`. Any header (or no
+  header) is accepted on `/load`.
+- Outbound: the lifespan attaches `Authorization: Bearer` to
+  upstream `/crawl` calls only when `PROXY_CRAWL4AI_API_TOKEN` is
+  set. Unset = upstream calls go without auth.
+
+This is a deliberate trust posture for "next to OWUI on a local
+network", not an oversight. If the deployment ever crosses a trust
+boundary, that's the deployment's job to enforce (NetworkPolicy,
+sidecar, ingress) — not the proxy's.
 
 Changes to this contract are breaking for the OWUI side. Bump the
 minor version in `pyproject.toml` and call out the change in the PR

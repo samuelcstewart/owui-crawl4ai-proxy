@@ -8,17 +8,23 @@ Endpoints
 - `GET /health` — kubelet probe target. Probes upstream crawl4ai `/health`
                   (no auth required) and returns 200/503.
 
-Auth
-----
-When `PROXY_OWUI_API_TOKEN` is set, `POST /load` requires a matching
-Authorization Bearer header. OWUI's `ExternalWebLoader` always
-sends one (configured by `EXTERNAL_WEB_LOADER_API_KEY` on the OWUI
-side), so any cluster deploy should set the token.
+Auth posture
+------------
+This proxy is designed to run on a trusted local network alongside
+Open WebUI (and crawl4ai). Neither direction is authenticated:
+
+- Inbound (`/load`): the proxy never reads the inbound
+  `Authorization` header. OWUI's `ExternalWebLoader` sends one by
+  default; the proxy ignores it.
+- Outbound (`/crawl`): if `PROXY_CRAWL4AI_API_TOKEN` is set, the
+  proxy attaches `Authorization: Bearer` to every upstream call.
+  If unset, the proxy sends no Authorization header. crawl4ai 0.9.0+
+  requires auth by default, so leaving the token unset implies that
+  crawl4ai is reachable only on a network you trust.
 
 Error mapping for `/load`
 -------------------------
 - pydantic validation failure (422)             → logged + 422 to caller
-- wrong / missing Bearer when token is set      → 401
 - crawl4ai `success: false` or empty `results`  → 502 to caller
 - `len(results) != len(urls)` upstream bug      → 502 to caller
 - upstream 401 / 403 / 5xx                      → propagate status + generic body
@@ -80,15 +86,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """Manage the upstream httpx client lifecycle + settings."""
-        if settings is not None:
-            # Tests pass Settings they built; pin them on state so the
-            # auth dependency (which reads app.state.settings) doesn't
-            # need to re-read the env.
-            app.state.settings = settings
-        else:
-            app.state.settings = load_settings()
-
+        """Manage the upstream httpx client lifecycle."""
         if http_client is not None:
             # Tests pass a client they own; we must not close it.
             app.state.http_client = http_client
@@ -99,15 +97,20 @@ def create_app(
                 app.state.http_client = None
             return
 
-        cfg = app.state.settings
+        cfg = settings or load_settings()
+        # The crawl4ai bearer is optional. When unset we attach no
+        # Authorization header — that's the entire "local network"
+        # posture of this proxy.
+        upstream_headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if cfg.crawl4ai_api_token:
+            upstream_headers["Authorization"] = f"Bearer {cfg.crawl4ai_api_token}"
         client = httpx.AsyncClient(
             base_url=str(cfg.crawl4ai_url),
             timeout=httpx.Timeout(cfg.request_timeout),
-            headers={
-                "Authorization": f"Bearer {cfg.crawl4ai_api_token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=upstream_headers,
         )
         app.state.http_client = client
         app.state.owns_client = True
@@ -119,7 +122,7 @@ def create_app(
 
     app = FastAPI(
         title="owui-crawl4ai-proxy",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
         # Hide OpenAPI by default — callers pass a pre-built Settings
         # in tests, which means docs are off; otherwise expose /docs for
@@ -165,49 +168,12 @@ def get_http_client(request: Request) -> httpx.AsyncClient:
     return client
 
 
-def get_settings(request: Request) -> Settings:
-    """FastAPI dependency that yields the startup-resolved Settings."""
-    settings = getattr(request.app.state, "settings", None)
-    if settings is None:  # pragma: no cover — lifespan guarantees this
-        raise RuntimeError("settings not initialised; lifespan did not run")
-    return settings
-
-
-def require_owui_auth(
-    request: Request,
-    settings: Settings = Depends(get_settings),
-) -> None:
-    """Enforce Authorization Bearer against `Settings.owui_api_token`.
-
-    No-op when the token is unset (local dev / trusted in-cluster). When
-    the token is set, the request must carry the matching Bearer header;
-    anything else is 401.
-    """
-    expected = settings.owui_api_token
-    if expected is None:
-        return
-    header = request.headers.get("authorization", "")
-    scheme, _, presented = header.partition(" ")
-    if scheme.lower() != "bearer" or presented != expected:
-        # Use 401 (not 403) — the standard for missing / wrong Bearer.
-        # `WWW-Authenticate` per RFC 7235.
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or missing bearer token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
-@_router.post(
-    "/load",
-    response_model=list[Document],
-    dependencies=[Depends(require_owui_auth)],
-)
+@_router.post("/load", response_model=list[Document])
 async def load(
     body: LoadRequest,
     client: httpx.AsyncClient = Depends(get_http_client),
@@ -305,9 +271,7 @@ async def health(
 
     Returns 200 if upstream crawl4ai `/health` is reachable, 503
     otherwise. The Authorization header on the lifespan-managed client
-    is NOT used here because crawl4ai's `/health` is the one endpoint
-    that doesn't require auth — but sending the header is harmless and
-    keeps the client config uniform.
+    (if any) is harmless here — crawl4ai's `/health` is unauthenticated.
     """
     try:
         resp = await client.get(_HEALTH_PATH)

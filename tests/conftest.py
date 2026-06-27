@@ -18,9 +18,8 @@ from owui_crawl4ai_proxy.main import create_app
 def settings() -> Settings:
     """Settings with a fixed test token so the env is irrelevant.
 
-    `owui_api_token` is left at its default (`None`) so `/load` accepts
-    unauthenticated calls by default. Tests that exercise the auth path
-    build their own `Settings` with a token set.
+    The crawl4ai token is set so tests using the bare `settings`
+    fixture exercise the "Bearer attached upstream" path.
     """
     return Settings(
         crawl4ai_url="http://upstream.test",
@@ -39,11 +38,12 @@ def make_client():  # type: ignore[no-untyped-def]
             def handler(request):
                 return httpx.Response(200, json={"ok": True})
             with make_client(handler) as client:
-                r = client.post("/load", json={"url": "https://example.com"})
+                r = client.post("/load", json={"urls": ["https://example.com"]})
                 assert r.status_code == 200
 
-    Optional kwargs are forwarded to `Settings`, so the auth path can
-    be exercised by passing `owui_api_token="..."`.
+    Optional kwargs are forwarded to `Settings`. The most useful
+    override is `crawl4ai_api_token=None` to exercise the
+    "no upstream Authorization header" path.
     """
     upstreams: list[httpx.AsyncClient] = []
 
@@ -52,27 +52,30 @@ def make_client():  # type: ignore[no-untyped-def]
         **settings_overrides: Any,
     ) -> TestClient:
         transport = httpx.MockTransport(handler)
-        # The base_url is arbitrary here — the MockTransport ignores it
-        # and the request URL is whatever the app sends. The lifespan
-        # owns nothing; we close the client ourselves below. Headers
-        # here mirror what the production lifespan sets on the
-        # httpx.AsyncClient so tests reflect real auth behaviour.
+        # Build defaults as a dict and merge overrides so callers can
+        # pass `crawl4ai_api_token=None` without colliding with the
+        # default below.
+        defaults: dict[str, Any] = {
+            "crawl4ai_url": "http://upstream.test",
+            "crawl4ai_api_token": "test-token-not-secret",
+            "request_timeout": 5.0,
+        }
+        cfg = Settings(**(defaults | settings_overrides))
+        # Mirror the production lifespan: attach Authorization only when
+        # a crawl4ai token is configured. This lets the optional-token
+        # test assert on the exact header set the upstream receives.
+        upstream_headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if cfg.crawl4ai_api_token:
+            upstream_headers["Authorization"] = f"Bearer {cfg.crawl4ai_api_token}"
         upstream = httpx.AsyncClient(
             transport=transport,
             base_url="http://upstream.test",
-            headers={
-                "Authorization": "Bearer test-token-not-secret",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=upstream_headers,
         )
         upstreams.append(upstream)
-        cfg = Settings(
-            crawl4ai_url="http://upstream.test",
-            crawl4ai_api_token="test-token-not-secret",
-            request_timeout=5.0,
-            **settings_overrides,
-        )
         app = create_app(settings=cfg, http_client=upstream)
         return TestClient(app)
 
