@@ -1,8 +1,11 @@
 """Settings for the proxy.
 
 All env vars are prefixed `PROXY_` (e.g. `PROXY_CRAWL4AI_URL`).
-The crawl4ai token is required at startup; the Open WebUI token
-is optional (when unset, `/load` accepts unauthenticated calls).
+The crawl4ai bearer token is OPTIONAL — when set, the proxy
+attaches it to upstream /crawl calls; when unset, upstream calls
+go without auth. The proxy is designed to run on a trusted
+local network next to Open WebUI; neither side enforces auth
+on the other.
 """
 
 from __future__ import annotations
@@ -16,14 +19,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Runtime configuration loaded from `PROXY_*` env vars.
 
-    The upstream crawl4ai bearer token is required — the proxy is not
-    useful without it (crawl4ai 0.9.0+ rejects unauthenticated calls on
-    every endpoint except `GET /health`).
+    The upstream crawl4ai bearer token is optional. When set, the
+    proxy attaches it as `Authorization: Bearer` to every
+    upstream call. When unset, upstream calls go without auth —
+    fine when crawl4ai is reachable only over a trusted in-cluster
+    network. crawl4ai 0.9.0+ requires auth by default, so leaving
+    the token unset also implies that crawl4ai itself is configured
+    to accept unauthenticated calls (e.g. `AUTH_ENABLED=false` or
+    a network policy that blocks off-cluster traffic).
 
-    The Open WebUI bearer token is optional — set
-    PROXY_OWUI_API_TOKEN to enforce that POST /load requests carry
-    a matching Authorization Bearer header. Leave unset for local
-    dev or trusted in-cluster networks.
+    The proxy never validates any inbound Authorization header on
+    /load — OWUI may send one (its `ExternalWebLoader` always does)
+    and the proxy simply ignores it.
     """
 
     model_config = SettingsConfigDict(
@@ -38,26 +45,20 @@ class Settings(BaseSettings):
         description="Upstream crawl4ai base URL.",
     )
 
-    crawl4ai_api_token: str = Field(
-        ...,  # required, no default
+    crawl4ai_api_token: str | None = Field(
+        default=None,
         min_length=1,
-        description="Bearer token for crawl4ai 0.9.0+.",
+        description=(
+            "Optional Bearer token for upstream crawl4ai calls. "
+            "When set, the proxy attaches Authorization: Bearer. "
+            "When unset, upstream calls go without auth."
+        ),
     )
 
     request_timeout: float = Field(
         default=60.0,
         gt=0,
         description="httpx request timeout for upstream crawl4ai calls (seconds).",
-    )
-
-    owui_api_token: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "Optional Bearer token for POST /load callers (Open WebUI). "
-            "When set, requests must carry a matching Authorization "
-            "Bearer header. When unset, /load accepts unauthenticated calls."
-        ),
     )
 
 
