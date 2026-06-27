@@ -1,15 +1,17 @@
 # owui-crawl4ai-proxy
 
-A small HTTP service that bridges [Open WebUI](https://github.com/open-webui/open-webui)'s
-external web loader interface to a [crawl4ai](https://github.com/unclecode/crawl4ai)
+A small HTTP service that bridges [Open WebUI](https://github.com/open-webui/open-webui)
+0.9.x's external web loader interface to a [crawl4ai](https://github.com/unclecode/crawl4ai)
 instance. The proxy:
 
-- Accepts `POST /load` requests shaped like the Open WebUI external loader contract
-  (`{"url": "..."}`).
-- Internally forwards to crawl4ai's `POST /crawl` endpoint with the bearer token
-  crawl4ai 0.9.0+ requires.
-- Returns a langchain-style `Document` (`page_content` + `metadata`).
-- Exposes `GET /health` for liveness probes — checks that crawl4ai is reachable.
+- Accepts `POST /load` requests shaped like the Open WebUI external loader
+  contract (`{"urls": ["...", "..."]}` — a batch).
+- Internally forwards to crawl4ai's `POST /crawl` endpoint with the bearer
+  token crawl4ai 0.9.0+ requires.
+- Returns a JSON array of langchain-style `Document` (`page_content` +
+  `metadata`) — one per input URL, in order.
+- Exposes `GET /health` for liveness probes — checks that crawl4ai is
+  reachable.
 
 ## Stack
 
@@ -30,6 +32,7 @@ All env vars are prefixed `PROXY_`:
 | `PROXY_CRAWL4AI_URL` | `http://crawl4ai:11235` | Upstream crawl4ai base URL |
 | `PROXY_CRAWL4AI_API_TOKEN` | *(required)* | Bearer token for crawl4ai 0.9.0+ |
 | `PROXY_REQUEST_TIMEOUT` | `60.0` | Upstream request timeout (seconds) |
+| `PROXY_OWUI_API_TOKEN` | *(unset)* | Optional Bearer token for `POST /load` callers (Open WebUI). When unset, `/load` accepts unauthenticated calls. When set, callers must send a matching `Authorization: Bearer` header. |
 
 ## Local development
 
@@ -48,7 +51,7 @@ uv run uvicorn owui_crawl4ai_proxy.main:app --reload --port 8000
 docker compose up --build            # brings up crawl4ai 0.9.0 + this proxy
 curl -X POST http://localhost:8000/load \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.com"}' | jq
+  -d '{"urls":["https://example.com"]}' | jq
 ```
 
 For a standalone build of the proxy image only:
@@ -61,16 +64,32 @@ poe build                            # multi-arch (amd64+arm64), --load (Docker 
 
 ### `POST /load`
 
+Open WebUI 0.9.x's `ExternalWebLoader` sends `POST /load` with a
+`urls` batch (up to 20 URLs at a time). The proxy accepts that
+exact shape and returns one `Document` per URL in the same order:
+
 ```json
 // Request
-{"url": "https://example.com"}
+{"urls": ["https://example.com", "https://example.org"]}
 
-// Response (langchain Document)
-{
-  "page_content": "Markdown text...",
-  "metadata": {"source": "https://example.com", "title": "..."}
-}
+// Response (JSON array of langchain Documents, in input order)
+[
+  {
+    "page_content": "Markdown text for example.com...",
+    "metadata": {"source": "https://example.com", "title": "..."}
+  },
+  {
+    "page_content": "Markdown text for example.org...",
+    "metadata": {"source": "https://example.org", "title": "..."}
+  }
+]
 ```
+
+When `PROXY_OWUI_API_TOKEN` is set, requests must carry an
+`Authorization: Bearer` header whose token matches the configured
+value; otherwise the response is `401`. OWUI always sends a Bearer
+(its `EXTERNAL_WEB_LOADER_API_KEY`), so any cluster deploy should
+set the proxy's token to match.
 
 ### `GET /health`
 
