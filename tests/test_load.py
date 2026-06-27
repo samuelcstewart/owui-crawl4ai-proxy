@@ -429,74 +429,34 @@ def test_load_preserves_upstream_metadata_keys(make_client):  # type: ignore[no-
 
 
 # ---------------------------------------------------------------------------
-# Auth: PROXY_OWUI_API_TOKEN
+# Auth posture: no client auth, optional upstream auth
 # ---------------------------------------------------------------------------
 
 
-def test_load_accepts_missing_auth_when_token_unset(make_client):  # type: ignore[no-untyped-def]
-    """When `PROXY_OWUI_API_TOKEN` is unset, unauthenticated calls succeed."""
+def test_load_ignores_inbound_authorization_header(make_client):  # type: ignore[no-untyped-def]
+    """Inbound `Authorization` is never validated; any value is accepted.
+
+    The proxy is designed to run on a trusted local network alongside
+    Open WebUI. OWUI's `ExternalWebLoader` sends a Bearer header
+    regardless of any proxy setting; the proxy simply ignores it.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=make_crawl_response(markdown="# Hello"))
 
-    # Default settings: owui_api_token=None.
     with make_client(handler) as client:
-        r = client.post("/load", json={"urls": ["https://example.com"]})
-
-    assert r.status_code == 200
-
-
-def test_load_rejects_missing_auth_when_token_set(make_client):  # type: ignore[no-untyped-def]
-    """When the OWUI token is set, a request without Bearer is 401."""
-
-    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
-        raise AssertionError("upstream should not be called")
-
-    with make_client(handler, owui_api_token="owui-secret-token") as client:
-        r = client.post("/load", json={"urls": ["https://example.com"]})
-
-    assert r.status_code == 401
-    assert r.json() == {"detail": "invalid or missing bearer token"}
-    assert r.headers.get("www-authenticate") == "Bearer"
-
-
-def test_load_rejects_wrong_bearer_when_token_set(make_client):  # type: ignore[no-untyped-def]
-    """When the OWUI token is set, a wrong Bearer is 401."""
-
-    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
-        raise AssertionError("upstream should not be called")
-
-    with make_client(handler, owui_api_token="owui-secret-token") as client:
         r = client.post(
             "/load",
             json={"urls": ["https://example.com"]},
-            headers={"Authorization": "Bearer wrong-token"},
-        )
-
-    assert r.status_code == 401
-
-
-def test_load_accepts_matching_bearer_when_token_set(make_client):  # type: ignore[no-untyped-def]
-    """When the OWUI token is set, the matching Bearer is accepted."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=make_crawl_response(markdown="# Hello"))
-
-    with make_client(handler, owui_api_token="owui-secret-token") as client:
-        r = client.post(
-            "/load",
-            json={"urls": ["https://example.com"]},
-            headers={"Authorization": "Bearer owui-secret-token"},
+            headers={"Authorization": "Bearer anything-goes"},
         )
 
     assert r.status_code == 200
     assert r.json()[0]["page_content"] == "# Hello"
 
 
-def test_load_accepts_bearer_with_non_bearer_scheme_when_token_unset(  # type: ignore[no-untyped-def]
-    make_client,
-) -> None:
-    """When no OWUI token is set, any Authorization header is ignored."""
+def test_load_ignores_inbound_authorization_with_garbage_value(make_client):  # type: ignore[no-untyped-def]
+    """Even a clearly-invalid Authorization value is ignored, not 401."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=make_crawl_response(markdown="# Hello"))
@@ -509,3 +469,37 @@ def test_load_accepts_bearer_with_non_bearer_scheme_when_token_unset(  # type: i
         )
 
     assert r.status_code == 200
+
+
+def test_load_sends_bearer_upstream_when_crawl4ai_token_set(  # type: ignore[no-untyped-def]
+    make_client,
+) -> None:
+    """When `PROXY_CRAWL4AI_API_TOKEN` is set, the upstream call carries it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("Authorization") == "Bearer test-token-not-secret"
+        return httpx.Response(200, json=make_crawl_response(markdown="# Hello"))
+
+    # Default make_client settings include crawl4ai_api_token.
+    with make_client(handler) as client:
+        r = client.post("/load", json={"urls": ["https://example.com"]})
+
+    assert r.status_code == 200
+
+
+def test_load_omits_authorization_upstream_when_crawl4ai_token_unset(  # type: ignore[no-untyped-def]
+    make_client,
+) -> None:
+    """When `PROXY_CRAWL4AI_API_TOKEN` is unset, the upstream call has no Authorization."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers, (
+            f"upstream should not receive Authorization header; got {request.headers.get('Authorization')!r}"
+        )
+        return httpx.Response(200, json=make_crawl_response(markdown="# Hello"))
+
+    with make_client(handler, crawl4ai_api_token=None) as client:
+        r = client.post("/load", json={"urls": ["https://example.com"]})
+
+    assert r.status_code == 200
+    assert r.json()[0]["page_content"] == "# Hello"

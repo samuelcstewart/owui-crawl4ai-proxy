@@ -30,9 +30,14 @@ All env vars are prefixed `PROXY_`:
 | Variable | Default | Description |
 |---|---|---|
 | `PROXY_CRAWL4AI_URL` | `http://crawl4ai:11235` | Upstream crawl4ai base URL |
-| `PROXY_CRAWL4AI_API_TOKEN` | *(required)* | Bearer token for crawl4ai 0.9.0+ |
+| `PROXY_CRAWL4AI_API_TOKEN` | *(unset)* | Optional Bearer token for upstream crawl4ai calls. When set, the proxy attaches `Authorization: Bearer` to every upstream request. When unset, upstream calls go without auth — only safe when crawl4ai is reachable only on a trusted in-cluster network. |
 | `PROXY_REQUEST_TIMEOUT` | `60.0` | Upstream request timeout (seconds) |
-| `PROXY_OWUI_API_TOKEN` | *(unset)* | Optional Bearer token for `POST /load` callers (Open WebUI). When unset, `/load` accepts unauthenticated calls. When set, callers must send a matching `Authorization: Bearer` header. |
+
+The proxy never validates any inbound `Authorization` header on
+`POST /load`. OWUI's `ExternalWebLoader` sends one by default and
+the proxy simply ignores it. This proxy is designed to run on a
+trusted local network alongside Open WebUI and crawl4ai; both
+directions are unauthenticated by default.
 
 ## Local development
 
@@ -85,11 +90,9 @@ exact shape and returns one `Document` per URL in the same order:
 ]
 ```
 
-When `PROXY_OWUI_API_TOKEN` is set, requests must carry an
-`Authorization: Bearer` header whose token matches the configured
-value; otherwise the response is `401`. OWUI always sends a Bearer
-(its `EXTERNAL_WEB_LOADER_API_KEY`), so any cluster deploy should
-set the proxy's token to match.
+The proxy does not validate any inbound `Authorization` header on
+`/load`. OWUI may send one (its `ExternalWebLoader` always does)
+and the proxy ignores it.
 
 ### `GET /health`
 
