@@ -103,7 +103,7 @@ ghcr.io/samuelcstewart/owui-crawl4ai-proxy
 Tag scheme on push events:
 
 - main push → `:main`, `:<short-sha>`, `:latest`
-- `v0.1.0` tag → `:v0.1.0`, `:v0.1`, `:v0`, `:<short-sha>`
+- `v0.3.0` tag → `:v0.3.0`, `:v0.3`, `:v0`, `:<short-sha>`
 
 Visibility inherits from the repo (public). The `GITHUB_TOKEN` in the
 runner has `packages: write` via the workflow's `permissions` block.
