@@ -78,22 +78,28 @@ def test_health_endpoint_reports_ok_against_real_crawl4ai() -> None:
 
 
 @pytest.mark.integration
-def test_load_returns_document_for_example_com() -> None:
-    """`/load` against `https://example.com` returns a non-empty Document.
+def test_load_returns_document_list_for_example_com() -> None:
+    """`/load` against `https://example.com` returns a one-element Document list.
 
     This exercises the full path: POST /load → proxy → crawl4ai
-    `/crawl` with bearer auth → response shape mapping → Document.
+    `/crawl` with bearer auth → response shape mapping → Documents.
+
+    OWUI's `ExternalWebLoader` always sends a `urls` batch (up to 20
+    URLs); we send a batch of one here.
     """
     with _client() as c:
-        r = c.post("/load", json={"url": TARGET_URL})
+        r = c.post("/load", json={"urls": [TARGET_URL]})
 
     assert r.status_code == 200, f"unexpected status: {r.status_code} body={r.text!r}"
     payload = r.json()
-    # Document shape: page_content + metadata
-    assert "page_content" in payload
-    assert "metadata" in payload
+    # Response shape: JSON array of langchain Documents.
+    assert isinstance(payload, list), f"expected list, got {type(payload).__name__}"
+    assert len(payload) == 1
+    doc = payload[0]
+    assert "page_content" in doc
+    assert "metadata" in doc
 
-    page_content = payload["page_content"]
+    page_content = doc["page_content"]
     # example.com is a real HTML page that crawl4ai should render to
     # something with non-trivial content. We don't pin the exact
     # string (crawl4ai markdown formatting can shift between versions)
@@ -105,7 +111,7 @@ def test_load_returns_document_for_example_com() -> None:
         f"page_content missing the expected heading: {page_content!r}"
     )
 
-    metadata = payload["metadata"]
+    metadata = doc["metadata"]
     assert metadata.get("source") == TARGET_URL
 
 
@@ -120,7 +126,7 @@ def test_load_propagates_invalid_url_to_upstream() -> None:
     localhost:8000.
     """
     with _client() as c:
-        r = c.post("/load", json={"url": "not-a-url"})
+        r = c.post("/load", json={"urls": ["not-a-url"]})
 
     assert r.status_code == 422
 
@@ -137,7 +143,7 @@ def test_load_rejects_unknown_host_with_502() -> None:
     # `.invalid` is a reserved TLD (RFC 2606) guaranteed never to
     # resolve, so this is a deterministic fetch failure.
     with _client() as c:
-        r = c.post("/load", json={"url": "https://nonexistent.invalid/"})
+        r = c.post("/load", json={"urls": ["https://nonexistent.invalid/"]})
 
     assert r.status_code == 502, (
         f"expected 502 for unreachable target, got {r.status_code}: {r.text!r}"

@@ -2,14 +2,25 @@
 
 Endpoints
 ---------
-- `POST /load`  — Open WebUI external loader contract.
-                  Body: `{"url": "..."}`. Response: langchain `Document`.
+- `POST /load`  — Open WebUI 0.9.x external loader contract.
+                  Body: `{"urls": ["..."]}`. Response: JSON array of
+                  langchain `Document` (one per input URL, in order).
 - `GET /health` — kubelet probe target. Probes upstream crawl4ai `/health`
                   (no auth required) and returns 200/503.
 
+Auth
+----
+When `PROXY_OWUI_API_TOKEN` is set, `POST /load` requires a matching
+Authorization Bearer header. OWUI's `ExternalWebLoader` always
+sends one (configured by `EXTERNAL_WEB_LOADER_API_KEY` on the OWUI
+side), so any cluster deploy should set the token.
+
 Error mapping for `/load`
 -------------------------
+- pydantic validation failure (422)             → logged + 422 to caller
+- wrong / missing Bearer when token is set      → 401
 - crawl4ai `success: false` or empty `results`  → 502 to caller
+- `len(results) != len(urls)` upstream bug      → 502 to caller
 - upstream 401 / 403 / 5xx                      → propagate status + generic body
 - upstream connection error / timeout           → 502
 """
@@ -23,6 +34,8 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from owui_crawl4ai_proxy.config import Settings, load_settings
@@ -67,7 +80,15 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        """Manage the upstream httpx client lifecycle."""
+        """Manage the upstream httpx client lifecycle + settings."""
+        if settings is not None:
+            # Tests pass Settings they built; pin them on state so the
+            # auth dependency (which reads app.state.settings) doesn't
+            # need to re-read the env.
+            app.state.settings = settings
+        else:
+            app.state.settings = load_settings()
+
         if http_client is not None:
             # Tests pass a client they own; we must not close it.
             app.state.http_client = http_client
@@ -78,7 +99,7 @@ def create_app(
                 app.state.http_client = None
             return
 
-        cfg = settings or load_settings()
+        cfg = app.state.settings
         client = httpx.AsyncClient(
             base_url=str(cfg.crawl4ai_url),
             timeout=httpx.Timeout(cfg.request_timeout),
@@ -98,7 +119,7 @@ def create_app(
 
     app = FastAPI(
         title="owui-crawl4ai-proxy",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
         # Hide OpenAPI by default — callers pass a pre-built Settings
         # in tests, which means docs are off; otherwise expose /docs for
@@ -106,6 +127,26 @@ def create_app(
         docs_url="/docs" if (settings is None) else None,
         redoc_url=None,
     )
+
+    # Log 422s so a future request-shape drift (e.g. an Open WebUI
+    # upgrade changing the loader contract) is visible in proxy logs
+    # instead of only in the caller's logs.
+    @app.exception_handler(RequestValidationError)
+    async def _on_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # `exc.errors()` can carry non-JSON-serialisable objects (e.g.
+        # the original `ValueError` instance under `ctx['error']`).
+        # FastAPI's stock handler runs the same payload through
+        # `jsonable_encoder`; mirror that so the response is
+        # serialisable.
+        logger.warning(
+            "rejected request to %s: %s",
+            request.url.path,
+            exc.errors(),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": jsonable_encoder(exc.errors())},
+        )
 
     app.include_router(_router)
     return app
@@ -124,21 +165,59 @@ def get_http_client(request: Request) -> httpx.AsyncClient:
     return client
 
 
+def get_settings(request: Request) -> Settings:
+    """FastAPI dependency that yields the startup-resolved Settings."""
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:  # pragma: no cover — lifespan guarantees this
+        raise RuntimeError("settings not initialised; lifespan did not run")
+    return settings
+
+
+def require_owui_auth(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Enforce Authorization Bearer against `Settings.owui_api_token`.
+
+    No-op when the token is unset (local dev / trusted in-cluster). When
+    the token is set, the request must carry the matching Bearer header;
+    anything else is 401.
+    """
+    expected = settings.owui_api_token
+    if expected is None:
+        return
+    header = request.headers.get("authorization", "")
+    scheme, _, presented = header.partition(" ")
+    if scheme.lower() != "bearer" or presented != expected:
+        # Use 401 (not 403) — the standard for missing / wrong Bearer.
+        # `WWW-Authenticate` per RFC 7235.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
-@_router.post("/load", response_model=Document)
+@_router.post(
+    "/load",
+    response_model=list[Document],
+    dependencies=[Depends(require_owui_auth)],
+)
 async def load(
     body: LoadRequest,
     client: httpx.AsyncClient = Depends(get_http_client),
-) -> Document:
-    """Open WebUI external web loader contract.
+) -> list[Document]:
+    """Open WebUI 0.9.x external web loader contract.
 
-    Accepts `{"url": "..."}` and returns a langchain `Document`.
+    Accepts `{"urls": ["...", "..."]}` and returns a JSON array of
+    langchain `Document` (one per input URL, in the same order).
     """
-    upstream_body = CrawlRequest(urls=[body.url]).model_dump(mode="json")
+    upstream_body = CrawlRequest(urls=body.urls).model_dump(mode="json")
     try:
         resp = await client.post(_CRAWL_PATH, json=upstream_body)
     except httpx.HTTPError as exc:
@@ -169,26 +248,53 @@ async def load(
         )
 
     results = payload.get("results") or []
+    if not isinstance(results, list):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="upstream returned malformed results",
+        )
+
     if not results:
+        # `success: true` with an empty list is a meaningful state —
+        # the upstream call completed cleanly but there's nothing to
+        # return. Map to 502 with a dedicated message so callers can
+        # distinguish this from a misaligned batch (below).
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="upstream returned no results",
         )
 
-    first = results[0]
-    if not isinstance(first, dict):
+    # crawl4ai's contract: results[i] corresponds to urls[i]. A length
+    # mismatch means upstream returned a partial / misaligned batch,
+    # which we can't safely map back to the caller's URLs.
+    if len(results) != len(body.urls):
+        logger.warning(
+            "upstream returned %d results for %d urls",
+            len(results),
+            len(body.urls),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="upstream returned malformed result",
+            detail="upstream returned mismatched result count",
         )
 
-    page_content = _extract_page_content(first)
-    upstream_meta_raw: Any = first.get("metadata") or {}
-    upstream_meta = upstream_meta_raw if isinstance(upstream_meta_raw, dict) else {}
+    documents: list[Document] = []
+    for url, entry in zip(body.urls, results, strict=True):
+        if not isinstance(entry, dict):
+            # Same defensive posture as the single-URL case: a
+            # non-dict result is a contract violation, not something
+            # we can map back to a Document.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="upstream returned malformed result",
+            )
+        page_content = _extract_page_content(entry)
+        upstream_meta_raw: Any = entry.get("metadata") or {}
+        upstream_meta = upstream_meta_raw if isinstance(upstream_meta_raw, dict) else {}
+        metadata: dict[str, Any] = {"source": str(url), **upstream_meta}
+        documents.append(Document(page_content=page_content, metadata=metadata))
 
-    metadata: dict[str, Any] = {"source": str(body.url), **upstream_meta}
-
-    return Document(page_content=page_content, metadata=metadata)
+    return documents
 
 
 @_router.get("/health")

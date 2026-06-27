@@ -21,6 +21,30 @@ crawl4ai. Do not redesign the service or refactor unrelated code.
   `uv sync --frozen` against the committed `uv.lock`, so adding a
   runtime dep requires `uv lock` to regenerate the lockfile.
 
+## Open WebUI contract
+
+The proxy implements the Open WebUI 0.9.x external web loader
+contract. That contract is set by OWUI's
+`ExternalWebLoader.lazy_load` (see
+`backend/open_webui/retrieval/loaders/external_web.py` in the OWUI
+repo) — when in doubt, that source is the source of truth, not this
+proxy's README.
+
+`POST /load`:
+
+- Request: `{"urls": ["...", "..."]}` — a batch. OWUI sends up to 20
+  URLs at a time.
+- Response: a JSON array of langchain `Document` (`page_content` +
+  `metadata`), one per input URL, in the same order.
+- Auth: OWUI sends an `Authorization: Bearer` header where the token
+  is sourced from OWUI's `EXTERNAL_WEB_LOADER_API_KEY`. Set
+  `PROXY_OWUI_API_TOKEN` on the proxy to the same value to enforce
+  it; leave unset for trusted in-cluster calls.
+
+Changes to this contract are breaking for the OWUI side. Bump the
+minor version in `pyproject.toml` and call out the change in the PR
+description.
+
 ## Build
 
 The image is built with buildx. The bundled `docker-compose.yml` does
