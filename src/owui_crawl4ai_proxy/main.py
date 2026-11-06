@@ -34,7 +34,7 @@ Error mapping for `/load`
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -85,7 +85,7 @@ def create_app(
     """
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """Manage the upstream httpx client lifecycle."""
         if http_client is not None:
             # Tests pass a client they own; we must not close it.
