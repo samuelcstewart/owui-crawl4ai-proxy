@@ -42,6 +42,9 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# NOTE: the listen port is pinned here in the CMD. Kubernetes injects
+# PORT=tcp://<cluster-ip>:<port> into every pod via service-links; the
+# app ignores that value (see config.py) and always listens on 8000.
 EXPOSE 8000
 
 CMD ["uvicorn", "owui_crawl4ai_proxy.main:app", "--host", "0.0.0.0", "--port", "8000"]
